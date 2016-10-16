@@ -10,12 +10,13 @@ from tinydns import files, dhcpd, data as tinydata
 
 # Utility Functions
 CURRENT_TIME = time.time()
-
+MAX_TTL = 24 * 60 * 60  # seconds
+MIN_TTL = 60  # seconds
 
 def calc_ttl(lease):
     ttl = int(lease.expiration - CURRENT_TIME)
-    ttl = max(ttl, 60)
-    ttl = min(ttl, 86400)
+    ttl = max(ttl, MIN_TTL)
+    ttl = min(ttl, MAX_TTL)
     return str(ttl)
 
 
@@ -24,7 +25,7 @@ def dedot(dom):
 
 
 def domain_getter(domain_map):
-    dmap = domain_map.items()
+    dmap = list(domain_map.items())
     # sort the network addresses so that the larger networks come later
     # this way, we can define a smaller subnet that doesn't really
     # exist in dhcp to provide special names to sub machines
@@ -41,7 +42,7 @@ def domain_getter(domain_map):
 
 def dhcp_header(domain, spacer='='):
     msg = 'DHCP-Leased records for: {}'.format(domain)
-    spacer_count = (79 - len(msg) - 4) / 2
+    spacer_count = (79 - len(msg) - 4) // 2
     if spacer_count > 0:
         tmpl = ' {spacer} {message} {spacer}'
     else:
