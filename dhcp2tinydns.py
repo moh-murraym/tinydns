@@ -12,6 +12,7 @@ from tinydns import files, dhcpd, data as tinydata
 CURRENT_TIME = time.time()
 MAX_TTL = 24 * 60 * 60  # seconds
 MIN_TTL = 60  # seconds
+LINE_LENGTH = 79  # in characters
 
 def calc_ttl(lease):
     ttl = int(lease.expiration - CURRENT_TIME)
@@ -42,12 +43,13 @@ def domain_getter(domain_map):
 
 def dhcp_header(domain, spacer='='):
     msg = 'DHCP-Leased records for: {}'.format(domain)
-    spacer_count = (79 - len(msg) - 4) // 2
+    L = LINE_LENGTH - 19
+    spacer_count = (L - len(msg) - 4) // 2
     if spacer_count > 0:
         tmpl = ' {spacer} {message} {spacer}'
     else:
         tmpl = ' {spacer}\n# {message}\n# {spacer}'
-        spacer_count = 40
+        spacer_count = L
     return tmpl.format(spacer=(spacer * spacer_count), message=msg)
 
 
@@ -142,17 +144,10 @@ warning.add(
     )
 for file_name in options.static:
     warning.add(tinydata.Comment(file_name))
-
 dns.prepend(warning)
-
-# --- Add data from the MAC file and from the DHCP leases ---
-
-
 dynamics = {}
-
-leases = dhcpd.Leases(options.leases)
-
 mac_host_names = {}
+leases = dhcpd.Leases(options.leases)
 if options.macfile:
     for line in files.yield_lines(options.macfile):
         mac, host_name = line.split()
@@ -164,14 +159,14 @@ if options.macfile:
             mac_host_names[host_name] = None
             continue
         domain_suffix, entry = make_alias_entry(lease, host_name)
-        dynamics.setdefault(domain_suffix, tinydata.Section()).add(entry)
+        dynamics.setdefault(domain_suffix, []).append(entry)
         mac_host_names[host_name] = entry
 
 for lease in leases.yield_unique():
     if lease.host_name is None or lease.host_name in mac_host_names:
         continue
     suffix, entry = make_alias_entry(lease)
-    dynamics.setdefault(suffix, tinydata.Section()).add(entry)
+    dynamics.setdefault(suffix, []).append(entry)
 
 if dynamics:
     dhcp_section = tinydata.Section()
@@ -182,10 +177,8 @@ if dynamics:
     dns.append(dhcp_section)
     for suffix, section in dynamics.items():
         w = tinydata.Section()
-        w.add(tinydata.Comment(dhcp_header(suffix)))
+        w.add(tinydata.Comment(dhcp_header(suffix)), *section)
         dns.append(w)
-        dns.append(section)
-
 
 if options.dry_run:
     print(dns)
