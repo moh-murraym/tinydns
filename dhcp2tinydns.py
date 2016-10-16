@@ -1,26 +1,79 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 
 import os
-import sys
 import time
-import re
 import argparse
 
-import tinydns.data
-import tinydns.dhcpd
-from cross_platform import files
+from ipaddress import ip_network as ipnet, ip_address as ipaddr
 
-####################### Read command-line options #############################
+from tinydns import files, dhcpd, data as tinydata
+
+# Utility Functions
+CURRENT_TIME = time.time()
+
+
+def calc_ttl(lease):
+    ttl = int(lease.expiration - CURRENT_TIME)
+    ttl = max(ttl, 60)
+    ttl = min(ttl, 86400)
+    return str(ttl)
+
+
+def dedot(dom):
+    return dom.strip().lstrip('.')
+
+
+def domain_getter(domain_map):
+    dmap = domain_map.items()
+    # sort the network addresses so that the larger networks come later
+    # this way, we can define a smaller subnet that doesn't really
+    # exist in dhcp to provide special names to sub machines
+    dmap.sort(key=lambda x: x[0].network_address._ip + x[0].num_addresses)
+
+    def _real_get_domain(ip):
+        ipobj = ipaddr(ip)
+        for cidr, domain in dmap:
+            if ipobj in cidr:
+                return domain
+        return None
+    return _real_get_domain
+
+
+def dhcp_header(domain, spacer='='):
+    msg = 'DHCP-Leased records for: {}'.format(domain)
+    spacer_count = (79 - len(msg) - 4) / 2
+    if spacer_count > 0:
+        tmpl = ' {spacer} {message} {spacer}'
+    else:
+        tmpl = ' {spacer}\n# {message}\n# {spacer}'
+        spacer_count = 40
+    return tmpl.format(spacer=(spacer * spacer_count), message=msg)
+
+
+def make_alias_entry(lease, host_name=None):
+    hostname = lease.host_name if host_name is None else host_name
+    domain_suffix = get_domain(lease.ip)
+    fqdn = '.'.join((hostname, domain_suffix))
+    entry = tinydata.Alias(fqdn, lease.ip, ttl=calc_ttl(lease))
+    return (domain_suffix, entry)
+
+# --- Read command-line options ---
 
 parser = argparse.ArgumentParser(
     description='A utility to add dhcp-leased hosts to tinydns.'
     )
 parser.add_argument(
-    '-d', '--domain', nargs='?', required=True,
+    '-d', '--domain', nargs='?', required=False,
     help='''The domain to which hosts should belong. For example, if the
         domain is set to example.com then when the host jdoe is assigned
         an IP address via DHCP, it will be added to tinydns as
         jdoe.example.com.'''
+    )
+parser.add_argument(
+    '-n', '--subnet-map', nargs='?', required=False,
+    help='The path to a file which maps IP/Netmask prefixes to domains. '
+    'The syntax is : <ip/netmask>    <domain> '
+    'e.g. 192.168.12.0/26    dmz.example.com'
     )
 parser.add_argument(
     '--dry-run', action='store_true',
@@ -50,75 +103,91 @@ parser.add_argument(
         by spaces, or through the use of command-line wildcards (default:
         ROOT/*.static).'''
     )
+
 options = parser.parse_args()
-if options.static == None:
+if options.static is None:
     options.static = []
     if os.path.exists(options.root):
         for item in sorted(os.listdir(options.root)):
             if item.endswith('.static'):
                 options.static.append(os.path.join(options.root, item))
-while options.domain.startswith('.'):
-    options.domain = options.domain[1:]
+domain_map = {}
+if options.subnet_map:
+    for line in files.yield_lines(options.subnet_map):
+        i, d = line.split()
+        domain_map[ipnet(i.strip())] = dedot(d)
 
-##### Set up tinydns authorized host data starting with the static info #######
+if options.domain:
+    options.domain = dedot(options.domain)
+    allnet = ipnet('0.0.0.0/0')
+    if domain_map.get(allnet, options.domain) != options.domain:
+        print('Warning: Use of -d causes {} to override {}'.format(
+              options.domain, domain_map[allnet]))
+    domain_map[allnet] = options.domain
 
-dns = tinydns.data.AuthoritativeDNS()
-warning = tinydns.data.Section()
-warning.add(tinydns.data.Comment(' DO NOT EDIT! ALL CHANGES WILL BE LOST!'))
+get_domain = domain_getter(domain_map)
+
+# --- Set up tinydns authorized host data starting with the static info ---
+
+dns = tinydata.AuthoritativeDNS()
+warning = tinydata.Section()
+warning.add(tinydata.Comment(' DO NOT EDIT! ALL CHANGES WILL BE LOST!'))
 
 dns.read(*options.static)
 warning.add(
-    tinydns.data.Comment(' This file is generated automatically from the following files.'),
-    tinydns.data.Comment(' Edit them instead:')
+    tinydata.Comment(
+        ' This file is generated automatically from the following files.'),
+    tinydata.Comment(' Edit them instead:')
     )
 for file_name in options.static:
-    warning.add(tinydns.data.Comment(file_name))
+    warning.add(tinydata.Comment(file_name))
 
 dns.prepend(warning)
 
-############ Add data from the MAC file and from the DHCP leases ##############
+# --- Add data from the MAC file and from the DHCP leases ---
 
-CURRENT_TIME = time.time()
-def calc_ttl(lease):
-    ttl = int(lease.expiration - CURRENT_TIME)
-    ttl = max(ttl, 60)
-    ttl = min(ttl, 86400)
-    return str(ttl)
 
-dynamics = tinydns.data.Section()
-msg = '%s DHCP-Leased records for the %s domain %s' % (
-    '#' * 18,
-    options.domain,
-    '#' * 19
-    )
-dynamics.add(tinydns.data.Comment(msg))
-leases = tinydns.dhcpd.Leases(options.leases)
+dynamics = {}
 
-mac_host_names = []
+leases = dhcpd.Leases(options.leases)
+
+mac_host_names = {}
 if options.macfile:
     for line in files.yield_lines(options.macfile):
         mac, host_name = line.split()
         mac = mac.strip()
         host_name.strip()
-        mac_host_names.append(host_name)
         try:
             lease = leases[mac]
         except KeyError:
+            mac_host_names[host_name] = None
             continue
-        domain_name = '%s.%s' % (host_name, options.domain)
-        dynamics.add(tinydns.data.Alias(domain_name, lease.ip, ttl=calc_ttl(lease)))
+        domain_suffix, entry = make_alias_entry(lease, host_name)
+        dynamics.setdefault(domain_suffix, tinydata.Section()).add(entry)
+        mac_host_names[host_name] = entry
 
 for lease in leases.yield_unique():
-    if lease.host_name != None and \
-            lease.host_name not in mac_host_names:
-        domain_name = '%s.%s' % (lease.host_name, options.domain)
-        dynamics.add(tinydns.data.Alias(domain_name, lease.ip, ttl=calc_ttl(lease)))
+    if lease.host_name is None or lease.host_name in mac_host_names:
+        continue
+    suffix, entry = make_alias_entry(lease)
+    dynamics.setdefault(suffix, tinydata.Section()).add(entry)
 
-dns.append(dynamics)
+if dynamics:
+    dhcp_section = tinydata.Section()
+    dhcp_section.add(
+        tinydata.Comment(
+            ' {k} Everything below this line generated from DHCP {k}'.format(
+                k='_' * 14)))
+    dns.append(dhcp_section)
+    for suffix, section in dynamics.items():
+        w = tinydata.Section()
+        w.add(tinydata.Comment(dhcp_header(suffix)))
+        dns.append(w)
+        dns.append(section)
+
 
 if options.dry_run:
-    print dns
+    print(dns)
 else:
     dns.merge(options.root)
-    tinydns.data.make(options.root)
-
+    # tinydata.make(options.root)
