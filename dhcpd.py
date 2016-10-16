@@ -1,7 +1,7 @@
 
 import time
 
-from cross_platform import files
+from . import files
 
 class Leases(object):
     

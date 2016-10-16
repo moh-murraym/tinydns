@@ -3,7 +3,7 @@ import re
 import os
 import subprocess
 
-from cross_platform import files
+from . import files
 
 def make(tinydns_root):
     """Recompile the tinydns data file.
