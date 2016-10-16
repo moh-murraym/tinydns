@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os
+import socket
 import time
 import argparse
 
@@ -13,6 +14,7 @@ CURRENT_TIME = time.time()
 MAX_TTL = 24 * 60 * 60  # seconds
 MIN_TTL = 60  # seconds
 LINE_LENGTH = 79  # in characters
+DEFAULT_DOMAIN = ''
 
 def calc_ttl(lease):
     ttl = int(lease.expiration - CURRENT_TIME)
@@ -41,7 +43,7 @@ def domain_getter(domain_map):
     return _real_get_domain
 
 
-def dhcp_header(domain, spacer='='):
+def dhcp_header(domain, spacer='-'):
     msg = 'DHCP-Leased records for: {}'.format(domain)
     L = LINE_LENGTH - 19
     spacer_count = (L - len(msg) - 4) // 2
@@ -56,6 +58,8 @@ def dhcp_header(domain, spacer='='):
 def make_alias_entry(lease, host_name=None):
     hostname = lease.host_name if host_name is None else host_name
     domain_suffix = get_domain(lease.ip)
+    if domain_suffix is None:
+        domain_suffix = DEFAULT_DOMAIN
     fqdn = '.'.join((hostname, domain_suffix))
     entry = tinydata.Alias(fqdn, lease.ip, ttl=calc_ttl(lease))
     return (domain_suffix, entry)
@@ -66,17 +70,16 @@ parser = argparse.ArgumentParser(
     description='A utility to add dhcp-leased hosts to tinydns.'
     )
 parser.add_argument(
-    '-d', '--domain', nargs='?', required=False,
-    help='''The domain to which hosts should belong. For example, if the
-        domain is set to example.com then when the host jdoe is assigned
-        an IP address via DHCP, it will be added to tinydns as
-        jdoe.example.com.'''
-    )
-parser.add_argument(
     '-n', '--subnet-map', nargs='?', required=False,
     help='The path to a file which maps IP/Netmask prefixes to domains. '
     'The syntax is : <ip/netmask>    <domain> '
     'e.g. 192.168.12.0/26    dmz.example.com'
+    )
+parser.add_argument(
+    '-d', '--domain', nargs='?', required=False,
+    help='The default domain to which hosts should belong. If you specify -n '
+    'this is used as the default domain for hosts that don\'t match any of the'
+    ' subnets in the subnet-map.'
     )
 parser.add_argument(
     '--dry-run', action='store_true',
@@ -120,8 +123,14 @@ if options.subnet_map:
         i, d = line.split()
         domain_map[ipnet(i.strip())] = dedot(d)
 
+server_domain = socket.getfqdn()
+if '.' in server_domain:
+    server_domain = '.'.join(list(filter(None, server_domain.split('.')))[1:])
+    DEFAULT_DOMAIN = server_domain
+
 if options.domain:
     options.domain = dedot(options.domain)
+    DEFAULT_DOMAIN = options.domain
     allnet = ipnet('0.0.0.0/0')
     if domain_map.get(allnet, options.domain) != options.domain:
         print('Warning: Use of -d causes {} to override {}'.format(
