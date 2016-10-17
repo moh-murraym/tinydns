@@ -1,10 +1,13 @@
-This module provides an interface to the DNS record format used by
-the tinydns authoritative domain name server (see 
-http://cr.yp.to/djbdns/tinydns.html for more information).
+tinydns
+=======================
+
+An interface to the DNS record format used by the *tinydns* authoritative
+domain name server (see http://cr.yp.to/djbdns/tinydns.html for more
+information on that).
 
 The module also includes a bare-bones parser for the ISC dhcpd leases file,
 and a script to import hosts with dhcp leases into the tinydns data file.
 
-The cross_platform module available at https://github.com/msaavedra/cross_platform
-is required.
+The files.py module from the  cross_platform module available at https://github.com/msaavedra/cross_platform has been copied in to reduce the number of external dependencies.
 
+Compatible with Python 2.7, 3.4 and 3.5.
